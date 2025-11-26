@@ -40,14 +40,6 @@ signalwire-agents/.claude/skills/signalwire-agents-sdk/
 
 This makes the skill available to all SDK users automatically.
 
-## Verification
-
-After installation, verify the skill is recognized:
-
-```bash
-claude /skills
-```
-
 You should see `signalwire-agents-sdk` listed.
 
 ## Usage
