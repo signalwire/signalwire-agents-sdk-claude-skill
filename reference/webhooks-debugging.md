@@ -355,3 +355,25 @@ def on_summary(self, summary=None, raw_data=None):
 ```bash
 DEBUG_WEBHOOK_LEVEL=0  # or 1 for basic events only
 ```
+
+## Debug Routes
+
+### enable_debug_routes()
+
+Enable debug endpoints for testing (automatically enabled in development):
+
+```python
+agent.enable_debug_routes()
+```
+
+This provides endpoints for call inspection and testing.
+
+### setup_graceful_shutdown()
+
+Set up signal handlers for clean shutdown (useful for Kubernetes):
+
+```python
+agent.setup_graceful_shutdown()
+```
+
+This handles SIGTERM and SIGINT signals for graceful termination.

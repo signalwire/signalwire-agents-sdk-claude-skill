@@ -566,13 +566,28 @@ swaig-test agent.py --agent-class MyAgent
 ## Reference Files
 
 For detailed API documentation, see:
+
+### Core Reference
 - `reference/agent-base.md` - Complete AgentBase reference
 - `reference/swaig-functions.md` - Function definition patterns
 - `reference/function-result.md` - SwaigFunctionResult actions
 - `reference/agent-server.md` - Multi-agent deployment and static files
+
+### Advanced Features
+- `reference/datamap-advanced.md` - DataMap expressions, webhooks, array processing
+- `reference/contexts-steps.md` - Workflow system with steps and navigation
+- `reference/prefabs.md` - Pre-built agents (InfoGatherer, Survey, Concierge, etc.)
+- `reference/voice-configuration.md` - TTS engines, voices, fillers, pronunciation
+- `reference/dynamic-configuration.md` - Per-request customization and routing
+- `reference/skills-complete.md` - All built-in skills and custom skill development
+- `reference/sip-routing.md` - SIP username-based routing
+- `reference/bedrock-agent.md` - Amazon Bedrock voice-to-voice integration
+
+### Deployment
+- `reference/serverless.md` - AWS Lambda, Google Cloud Functions, Azure, CGI
 - `reference/environment-variables.md` - Complete env var reference
-- `reference/webhooks-debugging.md` - Debug webhooks and troubleshooting
 - `reference/signalwire-integration.md` - Fabric API, WebRTC, phone numbers
+- `reference/webhooks-debugging.md` - Debug webhooks, monitoring, troubleshooting
 
 ## Patterns
 
