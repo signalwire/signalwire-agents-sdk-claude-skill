@@ -5,91 +5,122 @@ Deploy SignalWire AI Agents in serverless environments including AWS Lambda, Goo
 ## Import
 
 ```python
-from signalwire_agents import AgentBase
+from signalwire_agents import AgentBase, SwaigFunctionResult
 ```
 
-## Automatic Mode Detection
+## Automatic Environment Detection
 
-The SDK automatically detects the execution environment:
+The SDK automatically detects the execution environment and handles request/response formats:
 
 | Environment | Detection Method |
 |-------------|------------------|
-| AWS Lambda | `AWS_LAMBDA_FUNCTION_NAME` env var |
-| Google Cloud Functions | `FUNCTION_TARGET` env var |
-| Azure Functions | `FUNCTIONS_WORKER_RUNTIME` env var |
+| AWS Lambda | `AWS_LAMBDA_FUNCTION_NAME`, `LAMBDA_TASK_ROOT` env vars |
+| Google Cloud Functions | `FUNCTION_TARGET`, `K_SERVICE`, `GOOGLE_CLOUD_PROJECT` env vars |
+| Azure Functions | `AZURE_FUNCTIONS_ENVIRONMENT`, `FUNCTIONS_WORKER_RUNTIME` env vars |
 | CGI | `GATEWAY_INTERFACE` env var |
 | HTTP Server | Default (no env vars) |
 
-## Usage Methods
+## Platform Comparison
 
-### Method 1: run() with Auto-Detection
-
-The simplest approach - let the SDK detect the environment:
-
-```python
-if __name__ == "__main__":
-    agent = MyAgent()
-    agent.run()  # Automatically uses serverless mode if detected
-```
-
-### Method 2: run() with Force Mode
-
-Force a specific execution mode:
-
-```python
-agent.run(force_mode="lambda")    # Force Lambda mode
-agent.run(force_mode="cgi")       # Force CGI mode
-agent.run(force_mode="google_cloud_function")  # Force GCF mode
-agent.run(force_mode="azure_function")  # Force Azure mode
-```
-
-### Method 3: handle_serverless_request()
-
-Directly handle serverless requests:
-
-```python
-def handle_serverless_request(
-    self,
-    event=None,      # Lambda/Cloud Function event
-    context=None,    # Lambda/Cloud Function context
-    mode=None        # Override execution mode
-) -> Any
-```
+| Platform | Entry Point | Max Timeout | Recommended Memory |
+|----------|-------------|-------------|-------------------|
+| AWS Lambda | `lambda_handler(event, context)` | 15 min | 512 MB+ |
+| Google Cloud Functions | `main(request)` | 60 min (Gen 2) | 512 MB+ |
+| Azure Functions | `main(req: func.HttpRequest)` | 10 min | 512 MB+ |
 
 ---
 
 ## AWS Lambda
 
-### Lambda Handler
+### Handler Pattern
 
 ```python
-# agent.py
-from signalwire_agents import AgentBase
-from signalwire_agents.core.function_result import SwaigFunctionResult
+#!/usr/bin/env python3
+"""AWS Lambda handler for SignalWire agent."""
+
+import os
+from signalwire_agents import AgentBase, SwaigFunctionResult
 
 
 class MyAgent(AgentBase):
+    """My agent for AWS Lambda deployment."""
+
     def __init__(self):
-        super().__init__(name="lambda-agent")
+        super().__init__(name="my-lambda-agent")
+
+        self._configure_prompts()
         self.add_language("English", "en-US", "rime.spore")
-        self.prompt_add_section("Role", "You are a helpful assistant.")
+        self._setup_functions()
 
-    @AgentBase.tool(
-        name="get_info",
-        description="Get information",
-        parameters={"query": {"type": "string"}}
-    )
-    def get_info(self, args, raw_data):
-        return SwaigFunctionResult(f"Info for: {args.get('query')}")
+    def _configure_prompts(self):
+        self.prompt_add_section(
+            "Role",
+            "You are a helpful assistant deployed on AWS Lambda."
+        )
+
+        self.prompt_add_section(
+            "Guidelines",
+            bullets=[
+                "Be concise and helpful",
+                "Use available functions when appropriate"
+            ]
+        )
+
+    def _setup_functions(self):
+        @self.tool(
+            description="Look up an order by ID",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The order ID to look up"
+                    }
+                },
+                "required": ["order_id"]
+            }
+        )
+        def lookup_order(args, raw_data):
+            order_id = args.get("order_id")
+            # Query DynamoDB or other backend
+            return SwaigFunctionResult(f"Order {order_id}: Shipped, arriving Friday")
+
+        @self.tool(description="Get platform runtime information")
+        def get_platform_info(args, raw_data):
+            region = os.getenv("AWS_REGION", "unknown")
+            function_name = os.getenv("AWS_LAMBDA_FUNCTION_NAME", "unknown")
+            memory = os.getenv("AWS_LAMBDA_FUNCTION_MEMORY_SIZE", "unknown")
+            return SwaigFunctionResult(
+                f"Running on AWS Lambda. Function: {function_name}, "
+                f"Region: {region}, Memory: {memory}MB."
+            )
 
 
-# Create singleton agent instance
+# CRITICAL: Create agent instance OUTSIDE handler for cold start optimization
 agent = MyAgent()
 
 
 def lambda_handler(event, context):
-    """AWS Lambda entry point."""
-    return agent.handle_serverless_request(event, context, mode="lambda")
+    """AWS Lambda entry point.
+
+    Args:
+        event: Lambda event (API Gateway request)
+        context: Lambda context with runtime info
+
+    Returns:
+        API Gateway response dict
+    """
+    return agent.run(event, context)
+```
+
+### requirements.txt
+
+```
+signalwire-agents>=1.0.10
+h11>=0.13,<0.15
+fastapi
+mangum
+uvicorn
 ```
 
 ### Lambda Response Format
@@ -104,50 +135,147 @@ The SDK returns Lambda-compatible responses:
 }
 ```
 
-### Lambda Configuration
+### API Gateway Setup
 
-**API Gateway Setup:**
-- Use proxy integration (`{proxy+}`)
-- Enable CORS if needed
-- Set appropriate timeout (30s+ recommended)
+- Use HTTP API (recommended) or REST API
+- Create routes for `GET /`, `POST /`, `POST /swaig`, and `ANY /{proxy+}`
+- Enable auto-deploy for the `$default` stage
+- Set Lambda timeout to 30s+ for voice calls
 
-**Environment Variables:**
-```
+### Environment Variables
+
+```bash
+# Authentication
+SWML_BASIC_AUTH_USER=admin
+SWML_BASIC_AUTH_PASSWORD=your-secure-password
+
+# Proxy URL (required for SWAIG callbacks)
+SWML_PROXY_URL_BASE=https://your-api-id.execute-api.us-east-1.amazonaws.com
+
+# SignalWire credentials (if using Fabric API)
 SIGNALWIRE_SPACE_NAME=your-space
 SIGNALWIRE_PROJECT_ID=your-project-id
 SIGNALWIRE_TOKEN=your-token
-SWML_PROXY_URL_BASE=https://your-api-gateway-url.execute-api.region.amazonaws.com/stage
 ```
 
-**Authentication:**
-```python
-agent = MyAgent(basic_auth=("user", "password"))
+### Deploy Script Example
+
+```bash
+#!/bin/bash
+# Deploy to AWS Lambda
+
+FUNCTION_NAME="${1:-signalwire-agent}"
+REGION="${2:-us-east-1}"
+RUNTIME="python3.11"
+HANDLER="handler.lambda_handler"
+MEMORY_SIZE=512
+TIMEOUT=30
+
+# Build with Docker for correct architecture
+docker run --rm \
+    --platform linux/amd64 \
+    -v "$(pwd):/var/task:ro" \
+    -v "$PACKAGE_DIR:/var/output" \
+    -w /var/task \
+    public.ecr.aws/lambda/python:3.11 \
+    bash -c "pip install -r requirements.txt -t /var/output --quiet && cp handler.py /var/output/"
+
+# Create deployment package
+cd "$PACKAGE_DIR" && zip -r function.zip . -q
+
+# Deploy
+aws lambda create-function \
+    --function-name "$FUNCTION_NAME" \
+    --runtime "$RUNTIME" \
+    --handler "$HANDLER" \
+    --zip-file "fileb://function.zip" \
+    --memory-size "$MEMORY_SIZE" \
+    --timeout "$TIMEOUT" \
+    --region "$REGION" \
+    --environment "Variables={SWML_BASIC_AUTH_USER=admin,SWML_BASIC_AUTH_PASSWORD=secret}"
 ```
 
 ---
 
 ## Google Cloud Functions
 
-### Cloud Function Handler
+### Handler Pattern
 
 ```python
-# main.py
-from signalwire_agents import AgentBase
+#!/usr/bin/env python3
+"""Google Cloud Functions handler for SignalWire agent."""
+
+import os
+from signalwire_agents import AgentBase, SwaigFunctionResult
 
 
 class MyAgent(AgentBase):
+    """My agent for Google Cloud Functions deployment."""
+
     def __init__(self):
-        super().__init__(name="gcf-agent")
+        super().__init__(name="my-gcloud-agent")
+
+        self._configure_prompts()
         self.add_language("English", "en-US", "rime.spore")
-        self.prompt_add_section("Role", "You are a helpful assistant.")
+        self._setup_functions()
+
+    def _configure_prompts(self):
+        self.prompt_add_section(
+            "Role",
+            "You are a helpful assistant deployed on Google Cloud Functions."
+        )
+
+    def _setup_functions(self):
+        @self.tool(
+            description="Say hello to a user",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the person to greet"
+                    }
+                },
+                "required": ["name"]
+            }
+        )
+        def say_hello(args, raw_data):
+            name = args.get("name", "World")
+            return SwaigFunctionResult(f"Hello {name}!")
+
+        @self.tool(description="Get platform runtime information")
+        def get_platform_info(args, raw_data):
+            import urllib.request
+
+            # Gen 2 Cloud Functions run on Cloud Run
+            service = os.getenv("K_SERVICE", "unknown")
+            revision = os.getenv("K_REVISION", "unknown")
+
+            # Query metadata server for project ID
+            project = os.getenv("GOOGLE_CLOUD_PROJECT", "unknown")
+            if project == "unknown":
+                try:
+                    req = urllib.request.Request(
+                        "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+                        headers={"Metadata-Flavor": "Google"}
+                    )
+                    with urllib.request.urlopen(req, timeout=2) as resp:
+                        project = resp.read().decode()
+                except Exception:
+                    pass
+
+            return SwaigFunctionResult(
+                f"Running on Google Cloud Functions Gen 2. "
+                f"Service: {service}, Revision: {revision}, Project: {project}."
+            )
 
 
-# Create singleton agent instance
+# Create agent instance outside handler for warm starts
 agent = MyAgent()
 
 
-def agent_handler(request):
-    """Google Cloud Function entry point.
+def main(request):
+    """Google Cloud Functions entry point.
 
     Args:
         request: Flask request object
@@ -155,100 +283,194 @@ def agent_handler(request):
     Returns:
         Flask response
     """
-    return agent.handle_serverless_request(request, mode="google_cloud_function")
+    return agent.run(request)
+```
+
+### requirements.txt
+
+```
+signalwire-agents>=1.0.10
+functions-framework>=3.0.0
 ```
 
 ### Deployment
 
 ```bash
-gcloud functions deploy agent_handler \
-    --runtime python39 \
+gcloud functions deploy my-agent \
+    --gen2 \
+    --runtime python311 \
     --trigger-http \
     --allow-unauthenticated \
-    --timeout 300
+    --entry-point main \
+    --region us-central1 \
+    --memory 512MB \
+    --timeout 60s \
+    --min-instances 0 \
+    --max-instances 10
 ```
 
-### Environment Variables
+### Set Environment Variables
 
-Set in Cloud Console or `env.yaml`:
-
-```yaml
-SIGNALWIRE_SPACE_NAME: your-space
-SIGNALWIRE_PROJECT_ID: your-project-id
-SIGNALWIRE_TOKEN: your-token
-SWML_PROXY_URL_BASE: https://your-region-your-project.cloudfunctions.net/agent_handler
+```bash
+gcloud functions deploy my-agent \
+    --region us-central1 \
+    --gen2 \
+    --update-env-vars SWML_BASIC_AUTH_USER=myuser,SWML_BASIC_AUTH_PASSWORD=mypass
 ```
 
 ---
 
 ## Azure Functions
 
-### Azure Function Handler
+### Handler Pattern
 
 ```python
-# __init__.py
+#!/usr/bin/env python3
+"""Azure Functions handler for SignalWire agent."""
+
+import os
 import azure.functions as func
-from signalwire_agents import AgentBase
+from signalwire_agents import AgentBase, SwaigFunctionResult
 
 
 class MyAgent(AgentBase):
+    """My agent for Azure Functions deployment."""
+
     def __init__(self):
-        super().__init__(name="azure-agent")
+        super().__init__(name="my-azure-agent")
+
+        self._configure_prompts()
         self.add_language("English", "en-US", "rime.spore")
-        self.prompt_add_section("Role", "You are a helpful assistant.")
+        self._setup_functions()
+
+    def _configure_prompts(self):
+        self.prompt_add_section(
+            "Role",
+            "You are a helpful assistant deployed on Azure Functions."
+        )
+
+    def _setup_functions(self):
+        @self.tool(
+            description="Say hello to a user",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the person to greet"
+                    }
+                },
+                "required": ["name"]
+            }
+        )
+        def say_hello(args, raw_data):
+            name = args.get("name", "World")
+            return SwaigFunctionResult(f"Hello {name}!")
+
+        @self.tool(description="Get Azure deployment information")
+        def get_platform_info(args, raw_data):
+            function_name = os.getenv("WEBSITE_SITE_NAME", "unknown")
+            region = os.getenv("REGION_NAME", "unknown")
+            runtime = os.getenv("FUNCTIONS_WORKER_RUNTIME", "unknown")
+            version = os.getenv("FUNCTIONS_EXTENSION_VERSION", "unknown")
+
+            return SwaigFunctionResult(
+                f"Running on Azure Functions. "
+                f"App: {function_name}, Region: {region}, "
+                f"Runtime: {runtime}, Version: {version}."
+            )
 
 
-# Create singleton agent instance
+# Create agent instance outside handler for warm starts
 agent = MyAgent()
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    """Azure Function entry point."""
-    return agent.handle_serverless_request(req, mode="azure_function")
+    """Azure Functions entry point.
+
+    Args:
+        req: Azure Functions HTTP request object
+
+    Returns:
+        Azure Functions HTTP response
+    """
+    return agent.run(req)
 ```
 
 ### function.json
 
 ```json
 {
-  "scriptFile": "__init__.py",
-  "bindings": [
-    {
-      "authLevel": "anonymous",
-      "type": "httpTrigger",
-      "direction": "in",
-      "name": "req",
-      "methods": ["get", "post"]
-    },
-    {
-      "type": "http",
-      "direction": "out",
-      "name": "$return"
-    }
-  ]
+    "scriptFile": "__init__.py",
+    "bindings": [
+        {
+            "authLevel": "anonymous",
+            "type": "httpTrigger",
+            "direction": "in",
+            "name": "req",
+            "methods": ["get", "post"],
+            "route": "{*path}"
+        },
+        {
+            "type": "http",
+            "direction": "out",
+            "name": "$return"
+        }
+    ]
 }
 ```
 
-### Environment Variables
+### host.json
 
-Set in Application Settings:
+```json
+{
+    "version": "2.0",
+    "extensionBundle": {
+        "id": "Microsoft.Azure.Functions.ExtensionBundle",
+        "version": "[4.*, 5.0.0)"
+    }
+}
+```
+
+### requirements.txt
 
 ```
-SIGNALWIRE_SPACE_NAME=your-space
-SIGNALWIRE_PROJECT_ID=your-project-id
-SIGNALWIRE_TOKEN=your-token
-SWML_PROXY_URL_BASE=https://your-function.azurewebsites.net/api/agent
+azure-functions>=1.17.0
+signalwire-agents>=1.0.10
+```
+
+### Deployment
+
+```bash
+# Create function app
+az functionapp create \
+    --name my-signalwire-agent \
+    --resource-group my-resource-group \
+    --consumption-plan-location eastus \
+    --runtime python \
+    --runtime-version 3.11 \
+    --functions-version 4 \
+    --storage-account mystorageaccount
+
+# Deploy code
+func azure functionapp publish my-signalwire-agent
+
+# Set environment variables
+az functionapp config appsettings set \
+    --name my-signalwire-agent \
+    --resource-group my-resource-group \
+    --settings SWML_BASIC_AUTH_USER=user SWML_BASIC_AUTH_PASSWORD=pass
 ```
 
 ---
 
 ## CGI Mode
 
-For traditional CGI deployments:
+For traditional CGI deployments (Apache, nginx with FastCGI):
 
 ```python
 #!/usr/bin/env python3
-from signalwire_agents import AgentBase
+from signalwire_agents import AgentBase, SwaigFunctionResult
 
 
 class MyAgent(AgentBase):
@@ -275,195 +497,306 @@ ScriptAlias /agent /var/www/cgi-bin/agent.py
 
 ---
 
-## Authentication in Serverless
+## Force Mode Override
 
-All serverless modes support basic authentication:
+Force a specific execution mode during development or testing:
 
 ```python
-agent = MyAgent(basic_auth=("username", "password"))
+# Force specific modes
+agent.run(force_mode="lambda")
+agent.run(force_mode="google_cloud_function")
+agent.run(force_mode="azure_function")
+agent.run(force_mode="cgi")
 ```
-
-Authentication is checked automatically for each request. Failed auth returns:
-- Lambda: `401` status with `WWW-Authenticate` header
-- GCF/Azure: Flask response with `401` status
-- CGI: Appropriate HTTP headers
 
 ---
 
-## URL Configuration
+## Multi-Agent Serverless
 
-### Proxy URL Base
-
-Set the external URL where your function is accessible:
+Deploy multiple agents in a single serverless function using AgentServer:
 
 ```python
-# Via environment variable (recommended)
-export SWML_PROXY_URL_BASE="https://your-function-url.com"
+from signalwire_agents import AgentBase, AgentServer, SwaigFunctionResult
 
-# Or programmatically
-agent.manual_set_proxy_url("https://your-function-url.com")
+
+class SalesAgent(AgentBase):
+    def __init__(self):
+        super().__init__(name="sales", route="/sales")
+        self.prompt_add_section("Role", "You are a sales specialist.")
+        self.add_language("English", "en-US", "rime.spore")
+
+
+class SupportAgent(AgentBase):
+    def __init__(self):
+        super().__init__(name="support", route="/support")
+        self.prompt_add_section("Role", "You are a support specialist.")
+        self.add_language("English", "en-US", "rime.spore")
+
+
+# Create server with multiple agents
+server = AgentServer()
+server.register(SalesAgent(), "/sales")
+server.register(SupportAgent(), "/support")
+
+
+# AWS Lambda
+def lambda_handler(event, context):
+    return server.run(event, context)
+
+
+# Google Cloud
+def main(request):
+    return server.run(request)
+
+
+# Azure
+def main(req):
+    return server.run(req)
 ```
 
-This URL is used for SWAIG webhook callbacks.
+---
+
+## DataMap for Serverless
+
+DataMap enables SWAIG functions that execute on SignalWire servers without requiring webhook callbacks - ideal for reducing serverless complexity:
+
+```python
+from signalwire_agents import AgentBase
+from signalwire_agents.core.data_map import DataMap
+from signalwire_agents.core.function_result import SwaigFunctionResult
+
+
+class APIAgent(AgentBase):
+    def __init__(self):
+        super().__init__(name="api-agent")
+        self.add_language("English", "en-US", "rime.spore")
+        self._setup_datamaps()
+
+    def _setup_datamaps(self):
+        # Weather lookup via external API (no local handler needed)
+        weather = (
+            DataMap("check_weather")
+            .purpose("Check weather conditions")
+            .parameter("location", "string", "City or zip code", required=True)
+            .webhook("GET", "https://api.weather.com/v1/current?q=${enc:args.location}")
+            .output(SwaigFunctionResult(
+                "Current conditions in ${args.location}: ${response.condition}, ${response.temp}°F"
+            ))
+            .fallback_output(SwaigFunctionResult("Weather service is currently unavailable"))
+        )
+
+        # Order status lookup
+        order_status = (
+            DataMap("check_order")
+            .purpose("Check order status")
+            .parameter("order_id", "string", "Order number", required=True)
+            .webhook(
+                "GET",
+                "https://api.orders.com/status/${enc:args.order_id}",
+                headers={"Authorization": "Bearer ${env.API_KEY}"}
+            )
+            .output(SwaigFunctionResult(
+                "Order ${args.order_id}: ${response.status}. "
+                "Expected delivery: ${response.delivery_date}"
+            ))
+        )
+
+        # Expression-based control (no API call)
+        volume_control = (
+            DataMap("set_volume")
+            .purpose("Control audio volume")
+            .parameter("level", "string", "Volume level", required=True)
+            .expression("${args.level}", r"high|loud|up",
+                SwaigFunctionResult("Volume increased").add_action("volume", 100))
+            .expression("${args.level}", r"low|quiet|down",
+                SwaigFunctionResult("Volume decreased").add_action("volume", 30))
+            .expression("${args.level}", r"mute|off",
+                SwaigFunctionResult("Audio muted").add_action("mute", True))
+        )
+
+        # Register all DataMaps
+        self.register_swaig_function(weather.to_swaig_function())
+        self.register_swaig_function(order_status.to_swaig_function())
+        self.register_swaig_function(volume_control.to_swaig_function())
+
+
+agent = APIAgent()
+
+def lambda_handler(event, context):
+    return agent.run(event, context)
+```
+
+### DataMap Variable Patterns
+
+```
+${args.param}              # Function argument value
+${enc:args.param}          # URL-encoded argument
+${lc:args.param}           # Lowercase argument
+${fmt_ph:args.phone}       # Format as phone number
+${response.field}          # API response field
+${response.arr[0]}         # Array element
+${global_data.key}         # Global session data
+${meta_data.key}           # Call metadata
+${env.VAR_NAME}            # Environment variable
+```
 
 ---
 
 ## Request Flow
 
-1. **Root request** (no path) → Returns SWML document
-2. **Path request** (e.g., `/function_name`) → Executes SWAIG function
-
-### SWML Endpoint
-
 ```
-POST https://your-function-url.com/
-```
-
-Returns the SWML document for SignalWire to consume.
-
-### SWAIG Endpoints
-
-```
-POST https://your-function-url.com/function_name
-Body: {
-    "function": "function_name",
-    "argument": {"parsed": [{"param": "value"}]},
-    "call_id": "..."
-}
+┌──────────────┐      ┌─────────────────┐      ┌──────────────────┐
+│  SignalWire  │──────│  API Gateway/   │──────│  Cloud Function  │
+│   Platform   │      │  HTTP Trigger   │      │  (Your Agent)    │
+└──────────────┘      └─────────────────┘      └──────────────────┘
+       │                      │                        │
+       │   POST /             │                        │
+       │─────────────────────>│───────────────────────>│
+       │                      │     Returns SWML       │
+       │<─────────────────────│<───────────────────────│
+       │                      │                        │
+       │   POST /swaig        │                        │
+       │─────────────────────>│───────────────────────>│
+       │                      │  Execute SWAIG func    │
+       │<─────────────────────│<───────────────────────│
 ```
 
 ---
 
-## Complete AWS Lambda Example
+## Authentication in Serverless
+
+All serverless modes support HTTP Basic authentication:
 
 ```python
-# agent.py
-import os
-from signalwire_agents import AgentBase
-from signalwire_agents.core.function_result import SwaigFunctionResult
+# Via environment variables (recommended)
+# Set SWML_BASIC_AUTH_USER and SWML_BASIC_AUTH_PASSWORD
 
-
-class CustomerServiceAgent(AgentBase):
-    """Customer service agent for Lambda deployment."""
-
-    def __init__(self):
-        super().__init__(
-            name="customer-service",
-            basic_auth=(
-                os.environ.get("AGENT_USER", "agent"),
-                os.environ.get("AGENT_PASSWORD", "secret")
-            )
-        )
-
-        # Configure voice
-        self.add_language("English", "en-US", "rime.spore")
-
-        # Build prompt
-        self.prompt_add_section("Role", "You are a customer service agent.")
-        self.prompt_add_section(
-            "Guidelines",
-            bullets=[
-                "Be helpful and professional",
-                "Use lookup_order for order inquiries",
-                "Transfer complex issues to human agents"
-            ]
-        )
-
-        # Add skills
-        self.add_skill("datetime", {"timezone": "America/New_York"})
-
-        # Configure post-prompt
-        self.set_post_prompt(json_schema={
-            "type": "object",
-            "properties": {
-                "resolved": {"type": "boolean"},
-                "summary": {"type": "string"}
-            }
-        })
-
-    @AgentBase.tool(
-        name="lookup_order",
-        description="Look up an order by number",
-        parameters={
-            "order_number": {
-                "type": "string",
-                "description": "Order number to look up"
-            }
-        },
-        fillers=["Let me check that order for you"]
-    )
-    def lookup_order(self, args, raw_data):
-        order_num = args.get("order_number")
-        # Query DynamoDB or other backend
-        return SwaigFunctionResult(f"Order {order_num}: Shipped, arriving Friday")
-
-    @AgentBase.tool(
-        name="transfer_to_human",
-        description="Transfer to a human agent",
-        parameters={}
-    )
-    def transfer_to_human(self, args, raw_data):
-        return (SwaigFunctionResult("Transferring to a specialist")
-                .add_action("transfer", {"dest": "sip:support@company.com"}))
-
-
-# Create singleton instance
-agent = CustomerServiceAgent()
-
-
-def lambda_handler(event, context):
-    """AWS Lambda entry point."""
-    return agent.handle_serverless_request(event, context, mode="lambda")
+# Or via constructor
+agent = MyAgent(basic_auth=("username", "password"))
 ```
 
-### SAM Template (template.yaml)
+Authentication is checked automatically for each request. Failed auth returns 401 with `WWW-Authenticate` header.
 
-```yaml
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+---
 
-Resources:
-  AgentFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: agent.lambda_handler
-      Runtime: python3.9
-      Timeout: 300
-      MemorySize: 512
-      Environment:
-        Variables:
-          SIGNALWIRE_SPACE_NAME: !Ref SignalWireSpace
-          SIGNALWIRE_PROJECT_ID: !Ref SignalWireProjectId
-          SIGNALWIRE_TOKEN: !Ref SignalWireToken
-          SWML_PROXY_URL_BASE: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
-          AGENT_USER: agent
-          AGENT_PASSWORD: !Ref AgentPassword
-      Events:
-        Root:
-          Type: Api
-          Properties:
-            Path: /
-            Method: ANY
-        Proxy:
-          Type: Api
-          Properties:
-            Path: /{proxy+}
-            Method: ANY
+## Testing Serverless Locally
+
+### Using swaig-test CLI
+
+```bash
+# Test AWS Lambda locally
+swaig-test handler.py --simulate-serverless lambda --dump-swml
+
+# Test Google Cloud Functions
+swaig-test main.py --simulate-serverless cloud_function --dump-swml
+
+# Test Azure Functions
+swaig-test function_app/__init__.py --simulate-serverless azure_function --dump-swml
+
+# Test specific function
+swaig-test handler.py --exec say_hello --args '{"name": "Alice"}'
+```
+
+### Testing Deployed Endpoints
+
+```bash
+# Test SWML output
+curl -u username:password https://your-endpoint/
+
+# Test SWAIG function
+curl -u username:password -X POST https://your-endpoint/swaig \
+    -H 'Content-Type: application/json' \
+    -d '{
+        "function": "say_hello",
+        "argument": {
+            "parsed": [{"name": "Alice"}]
+        }
+    }'
 ```
 
 ---
 
 ## Best Practices
 
-1. **Use singleton pattern** - Create agent instance outside handler
-2. **Set appropriate timeouts** - Voice calls need 60s+ for complex interactions
-3. **Configure authentication** - Always use basic_auth in production
-4. **Set SWML_PROXY_URL_BASE** - Required for SWAIG callbacks
-5. **Handle cold starts** - Minimize initialization time
-6. **Use environment variables** - Don't hardcode credentials
+### 1. Instantiate Agent Outside Handler
+
+```python
+# CORRECT - Instantiate once, reuse across invocations
+agent = MyAgent()
+
+def lambda_handler(event, context):
+    return agent.run(event, context)
+
+# WRONG - Creates new agent on every invocation (slow, wasteful)
+def lambda_handler(event, context):
+    agent = MyAgent()
+    return agent.run(event, context)
+```
+
+### 2. Handle Cold Starts
+
+- Minimize initialization code in `__init__`
+- Use lazy loading for heavy dependencies
+- Keep deployment package size small
+- Consider provisioned concurrency for latency-sensitive applications
+
+### 3. Configure Appropriate Timeouts
+
+| Use Case | Recommended Timeout |
+|----------|---------------------|
+| Simple agent | 30 seconds |
+| Complex voice interactions | 60+ seconds |
+| External API calls | 60+ seconds |
+
+### 4. Handle Statelessness
+
+Serverless functions are stateless. Don't rely on:
+- Local files (use S3, Cloud Storage, or external databases)
+- In-memory state between invocations
+- Instance variables that persist
+
+Use instead:
+- `set_global_data()` for session state
+- DataMap for API integrations
+- External storage for persistence
+
+### 5. Minimize Dependencies
+
+```
+# Keep requirements.txt minimal
+signalwire-agents>=1.0.10
+# Only add what you actually use
+```
+
+### 6. Use Environment Variables
+
+```python
+import os
+
+# Get credentials from environment
+api_key = os.getenv("MY_API_KEY")
+db_connection = os.getenv("DATABASE_URL")
+```
+
+---
+
+## Differences from Server-Based Deployment
+
+| Aspect | Server-Based | Serverless |
+|--------|--------------|------------|
+| Entry Point | `agent.run()` | Platform-specific handler |
+| Instantiation | Inside main block | Outside handler |
+| Port Binding | Yes (default 3000) | No - HTTP trigger |
+| Lifecycle | Persistent | Per-request |
+| State | In-memory (persistent) | Lost after execution |
+| Timeout | No limit | Platform-specific (10-60 min) |
+| Scaling | Manual | Auto-scaling |
+
+---
 
 ## See Also
 
 - [Agent Base Reference](agent-base.md) - Core agent documentation
+- [DataMap Advanced](datamap-advanced.md) - Server-side function details
 - [Environment Variables](environment-variables.md) - Configuration options
 - [Dynamic Configuration](dynamic-configuration.md) - Per-request customization

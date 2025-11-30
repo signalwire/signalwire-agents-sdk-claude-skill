@@ -527,6 +527,73 @@ if __name__ == "__main__":
     agent.run()
 ```
 
+### Serverless Template (AWS Lambda / Google Cloud / Azure)
+
+```python
+#!/usr/bin/env python3
+"""Serverless handler for SignalWire agent."""
+
+import os
+from signalwire_agents import AgentBase, SwaigFunctionResult
+
+
+class MyAgent(AgentBase):
+    """Description of what this agent does."""
+
+    def __init__(self):
+        super().__init__(name="my-serverless-agent")
+
+        # Configure voice
+        self.add_language("English", "en-US", "rime.spore")
+
+        # Build prompt
+        self.prompt_add_section("Role", "You are a helpful assistant.")
+        self._setup_functions()
+
+    def _setup_functions(self):
+        @self.tool(
+            description="Describe what this function does",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "The input to process"
+                    }
+                },
+                "required": ["input"]
+            }
+        )
+        def example_function(args, raw_data):
+            input_value = args.get("input", "")
+            return SwaigFunctionResult(f"Processed: {input_value}")
+
+
+# CRITICAL: Create agent instance OUTSIDE handler for cold start optimization
+agent = MyAgent()
+
+
+# AWS Lambda
+def lambda_handler(event, context):
+    return agent.run(event, context)
+
+
+# Google Cloud Functions
+def main(request):
+    return agent.run(request)
+
+
+# Azure Functions (requires: import azure.functions as func)
+# def main(req: func.HttpRequest) -> func.HttpResponse:
+#     return agent.run(req)
+```
+
+**Key Differences from Server-Based:**
+- Agent instantiated **outside** the handler function
+- Use `agent.run(event, context)` for Lambda, `agent.run(request)` for GCF
+- No port binding needed - HTTP trigger handles routing
+- Use `@self.tool` decorator inside `_setup_functions()` method (not `@AgentBase.tool`)
+
 ### Common Mistakes to Avoid
 
 1. **Missing language**: Agent won't speak without `add_language()`
@@ -605,6 +672,7 @@ Working code examples:
 - `examples/webrtc-enabled-agent.py` - Browser-based voice interaction
 - `examples/faq-bot.py` - FAQ bot with skills
 - `examples/datamap-agent.py` - Server-side functions with DataMap
+- `examples/serverless-agent.py` - AWS Lambda, Google Cloud Functions, Azure deployment
 
 ## Troubleshooting
 
